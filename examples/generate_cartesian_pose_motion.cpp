@@ -1,19 +1,30 @@
 // Copyright (c) 2023 Franka Robotics GmbH
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
+#include <fmt/core.h>
+
 #include <cmath>
 #include <iostream>
+#include <thread>
 
+#include <franka/control_types.h>
 #include <franka/exception.h>
 #include <franka/robot.h>
 
+#include <franka/gripper.h>
 #include "examples_common.h"
 
 /**
+ *
  * @example generate_cartesian_pose_motion.cpp
  * An example showing how to generate a Cartesian motion.
  *
  * @warning Before executing this example, make sure there is enough space in front of the robot.
  */
+
+double degreesToRadians(double degrees)
+{
+  return degrees * M_PI / 180;
+}
 
 int main(int argc, char** argv) {
   if (argc != 2) {
@@ -26,7 +37,11 @@ int main(int argc, char** argv) {
 
     // First move the robot to a suitable joint configuration
     std::array<double, 7> q_goal = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
-    MotionGenerator motion_generator(0.5, q_goal);
+    std::array<double, 7> degrees_goal = {{-54.8,28,12.1,-117,-9.7,144.2,-171.2}};
+    for (int i = 0; i < 7; i++) {
+      degrees_goal[i] = degreesToRadians(degrees_goal[i]);
+    }
+    MotionGenerator motion_generator(0.05, degrees_goal);
     std::cout << "WARNING: This example will move the robot! "
               << "Please make sure to have the user stop button at hand!" << std::endl
               << "Press Enter to continue..." << std::endl;
@@ -42,7 +57,21 @@ int main(int argc, char** argv) {
         {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
         {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
 
+    // franka::ControllerMode controller_mode = franka::ControllerMode::kJointImpedance;
     std::array<double, 16> initial_pose;
+
+    // franka::RobotState state = robot.readOnce();
+    // initial_pose = state.O_T_EE;
+    // std::array<double, 16> new_pose = initial_pose;
+    // new_pose[14] += 0.01;
+    // franka::CartesianPose cartesian_pose(new_pose);
+    // franka::CartesianPose
+    // robot.control(cartesian_pose);
+    // std::cout << "Finished moving to grasp pose." << std::endl;
+    // robot.writeOnce(initial_pose);
+    // return 0;
+
+
     double time = 0.0;
     robot.control([&time, &initial_pose](const franka::RobotState& robot_state,
                                          franka::Duration period) -> franka::CartesianPose {
@@ -51,22 +80,92 @@ int main(int argc, char** argv) {
       if (time == 0.0) {
         initial_pose = robot_state.O_T_EE;
       }
+      //constexpr double kRadius = 0.3;
+      //double angle = M_PI / 4 * (1 - std::cos(M_PI / 5.0 * time));
+      //double delta_x = kRadius * std::sin(angle);
+      double delta_z = 0.07 / (14.0/time);
 
-      constexpr double kRadius = 0.3;
-      double angle = M_PI / 4 * (1 - std::cos(M_PI / 5.0 * time));
-      double delta_x = kRadius * std::sin(angle);
-      double delta_z = kRadius * (std::cos(angle) - 1);
+      if (delta_z > 0.07/14.0){delta_z = 0.07/14.0;}
 
+      if (time > 13.0) {
+        delta_z = 0.07 / (14.0/(14.0-(time-0.0001)));
+      }
+      std::cout << delta_z << std::endl;
       std::array<double, 16> new_pose = initial_pose;
-      new_pose[12] += delta_x;
-      new_pose[14] += delta_z;
+      new_pose[14] -= delta_z * time;
+      //std::cout << new_pose << std::endl;
 
-      if (time >= 10.0) {
+
+      if (time >= 14.0) {
         std::cout << std::endl << "Finished motion, shutting down example" << std::endl;
         return franka::MotionFinished(new_pose);
       }
       return new_pose;
     });
+
+
+    franka::Gripper gripper(argv[1]);
+    // double grasping_width = std::stod(argv[3]);
+    double grasping_width = 0.05;
+    gripper.homing();
+
+    // Check for the maximum grasping width.
+    franka::GripperState gripper_state = gripper.readOnce();
+    std::cout << gripper_state.max_width << std::endl;
+
+    if (gripper_state.max_width < grasping_width) {
+      std::cout << "Object is too large for the current fingers on the gripper." << std::endl;
+      return -1;
+    }
+
+    // Grasp the object.
+    if (!gripper.grasp(grasping_width, 0.1, 60)) {
+      std::cout << "Failed to grasp object." << std::endl;
+      return -1;
+    }
+    return 0;
+
+    time = 0.0;
+    robot.control([&time, &initial_pose](const franka::RobotState& robot_state,
+                                         franka::Duration period) -> franka::CartesianPose {
+      time += period.toSec();
+
+      if (time == 0.0) {
+        initial_pose = robot_state.O_T_EE;
+      }
+      //constexpr double kRadius = 0.3;
+      //double angle = M_PI / 4 * (1 - std::cos(M_PI / 5.0 * time));
+      //double delta_x = kRadius * std::sin(angle);
+      double delta_z = 0.07 / (14.0/time);
+
+      if (delta_z > 0.07/14.0){delta_z = 0.07/14.0;}
+      std::cout << delta_z << std::endl;
+      std::array<double, 16> new_pose = initial_pose;
+      new_pose[14] += delta_z * time;
+      //std::cout << new_pose << std::endl;
+      if (time >= 14.0) {
+        std::cout << std::endl << "Finished motion, shutting down example" << std::endl;
+        return franka::MotionFinished(new_pose);
+      }
+      return new_pose;
+    });
+
+
+
+    // Wait 3s and check afterwards, if the object is still grasped.
+    //std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(3000));
+
+    gripper_state = gripper.readOnce();
+    if (!gripper_state.is_grasped) {
+      std::cout << "Object lost." << std::endl;
+      return -1;
+    }
+
+    std::cout << "Grasped object, will release it now." << std::endl;
+    gripper.stop();
+
+
+
   } catch (const franka::Exception& e) {
     std::cout << e.what() << std::endl;
     return -1;

@@ -2,6 +2,7 @@
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #include <iostream>
 #include <iterator>
+#include <iomanip>
 
 #include <franka/exception.h>
 #include <franka/model.h>
@@ -28,9 +29,13 @@ int main(int argc, char** argv) {
   }
 
   try {
-    franka::Robot robot(argv[1]);
+        // franka::Robot robot(argv[1]);
+    franka::Robot robot("172.16.0.3");
 
     franka::RobotState state = robot.readOnce();
+    std::cout << state.F_T_EE << std::endl;
+    std::cout << std::fixed << std::setprecision(15)<<state.O_T_EE_c << std::endl;
+    return 0;
 
     franka::Model model(robot.loadModel());
     for (franka::Frame frame = franka::Frame::kJoint1; frame <= franka::Frame::kEndEffector;

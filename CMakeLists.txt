@@ -76,6 +76,7 @@ endif()
 include(FetchFMT)
 
 ## Submodules
+add_subdirectory(ext)
 add_subdirectory(common)
 
 ## Library
