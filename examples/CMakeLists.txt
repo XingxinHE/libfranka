@@ -83,6 +83,8 @@ else()
     set(DEV_MODULE Development.Module)
 endif()
 
+# Set Python executable explicitly
+set(Python_EXECUTABLE "/home/hex/Documents/github/rfl/FrankaAssembly/.venv/bin/python")
 find_package(Python 3.10 COMPONENTS Interpreter ${DEV_MODULE} REQUIRED)
 
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
