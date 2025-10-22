@@ -4,6 +4,10 @@ project(libfranka-examples CXX)
 
 list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_CURRENT_LIST_DIR}/../cmake)
 
+include(FetchContent)
+FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+FetchContent_MakeAvailable(json)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -24,7 +28,7 @@ add_library(examples_common STATIC
   examples_common.cpp
 )
 
-target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3)
+target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3 nlohmann_json::nlohmann_json)
 target_include_directories(examples_common PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -51,6 +55,7 @@ set(EXAMPLES
   motion_with_control_external_control_loop
   print_joint_poses
   vacuum_object
+  speed_test
 )
 
 foreach(example ${EXAMPLES})
