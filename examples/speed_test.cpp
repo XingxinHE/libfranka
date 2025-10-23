@@ -1,9 +1,11 @@
 // Copyright (c) 2023 Franka Robotics GmbH
 // Use of this source code is governed by the Apache-2.0 license, see LICENSE
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -16,30 +18,65 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-int move_to_joint_v1(const std::vector<double>& target_state, float speed_factor) {
-  try {
-    const std::string robot_ip = "172.16.0.3";
-    franka::Robot robot(robot_ip);
-    setDefaultBehavior(robot);
+namespace Robot {
+std::unique_ptr<franka::Robot> make_robot(const std::string& ip) {
+  std::unique_ptr<franka::Robot> robot = std::make_unique<franka::Robot>(ip);
+  setDefaultBehavior(*robot);
+  return robot;
+}
 
-    robot.setCollisionBehavior(
-        {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
-        {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
-        {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
-        {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
+bool handle_reflex(const std::array<double, 7>& goal, std::unique_ptr<franka::Robot>& robot) {
+  constexpr int MAX_RETRIES = 10;
+  constexpr auto RETRY_INTERVAL = std::chrono::seconds(2);
 
-    robot.setJointImpedance({{3000, 3000, 3000, 3000, 3000, 3000, 3000}});
+  for (int retry = 0; retry < MAX_RETRIES; ++retry) {
+    const franka::RobotState state = robot->readOnce();
+    const franka::RobotMode mode = state.robot_mode;
 
-    // First move the robot to a suitable joint configuration
-    std::array<double, 7> q_goal;
-    for (size_t i = 0; i < 7; i++) {
-      q_goal[i] = target_state[i];
+    try {
+      // Check if robot mode allows movement (not in reflex)
+      if (franka::RobotMode::kIdle == mode || franka::RobotMode::kMove == mode) {
+        std::cout << "Robot ready, continue moving with low speed 0.3..." << std::endl;
+        MotionGenerator motion_generator(static_cast<double>(0.3f), goal);
+        robot->control(motion_generator);
+        std::cout << "Success!" << std::endl;
+        return true;
+      }
+    } catch (const franka::Exception& e) {
+      std::cout << "Retry " << (retry + 1) << ": " << e.what() << std::endl;
     }
-    MotionGenerator motion_generator(speed_factor, q_goal);
-    robot.control(motion_generator);
+    if (retry < MAX_RETRIES - 1) {  // Don't sleep after the last retry
+      std::cout << "Robot not ready, current mode is " << mode << std::endl;
+      std::this_thread::sleep_for(RETRY_INTERVAL);
+    }
+  }
+
+  return false;
+}
+}  // namespace Robot
+
+int move_to_joint(const std::vector<double>& target_state,
+                  const std::string& robot_ip,
+                  float speed_factor) {
+  if (target_state.size() != 7) {
+    std::cerr << "Move Joint should contain 7 values." << std::endl;
+    return -1;
+  }
+
+  std::unique_ptr<franka::Robot> robot = Robot::make_robot(robot_ip);
+
+  // First move the robot to a suitable joint configuration
+  std::array<double, 7> q_goal;
+  std::copy(target_state.begin(), target_state.end(), q_goal.begin());
+
+  try {
+    MotionGenerator motion_generator(static_cast<double>(speed_factor), q_goal);
+    robot->control(motion_generator);
   } catch (const franka::Exception& e) {
     std::cout << e.what() << std::endl;
-    return -1;
+    std::cout << "Try to handle reflex." << std::endl;
+    const bool isSuccess = Robot::handle_reflex(q_goal, robot);
+    return isSuccess ? 0 : -1;
   }
   return 0;
 }
@@ -63,7 +100,8 @@ int main() {
       "/home/hex/Documents/github/fork/libfranka/precomputed_data/traj_0_robot0_precompute.json";
 
   //  (3) start testing: go to home position first
-  move_to_joint_v1(HOME_POSITION, 0.1);
+  const std::string ip = "172.16.0.3";
+  move_to_joint(HOME_POSITION, ip, 0.3);
   const float TEST_SPEED_FACTOR = 1.0;
 
   int success_count = 0;
@@ -93,36 +131,9 @@ int main() {
     bool skip_to_next_file = false;
     for (size_t i = 0; i < traj.size(); ++i) {
       const std::vector<double>& target_state = traj[i];
-      const int result = move_to_joint_v1(target_state, TEST_SPEED_FACTOR);
+      const int result = move_to_joint(target_state, ip, TEST_SPEED_FACTOR);
       if (result != 0) {
         std::cout << "Failed at " << i << std::endl;
-        std::cout << "Waiting for robot to exit reflex mode..." << std::endl;
-
-        // Wait for robot to exit reflex mode
-        bool moved_home = false;
-        for (int retry = 0; retry < 10; ++retry) {
-          try {
-            franka::Robot recovery_robot("172.16.0.3");
-            franka::RobotState state = recovery_robot.readOnce();
-
-            // Check if robot mode allows movement (not in reflex)
-            if (state.robot_mode == franka::RobotMode::kIdle ||
-                state.robot_mode == franka::RobotMode::kMove) {
-              std::cout << "Robot ready, moving to home..." << std::endl;
-              if (move_to_joint_v1(HOME_POSITION, 0.1) == 0) {
-                moved_home = true;
-                break;
-              }
-            }
-          } catch (const franka::Exception& e) {
-            std::cout << "Retry " << (retry + 1) << ": " << e.what() << std::endl;
-          }
-          std::this_thread::sleep_for(std::chrono::seconds(2));
-        }
-
-        if (!moved_home) {
-          std::cout << "Failed to return home. Please manually recover the robot." << std::endl;
-        }
 
         skip_to_next_file = true;
         break;
@@ -136,37 +147,9 @@ int main() {
     // reverse the traj and move back
     for (size_t i = traj.size(); i-- > 0;) {
       const std::vector<double>& target_state = traj[i];
-      const int result = move_to_joint_v1(target_state, TEST_SPEED_FACTOR);
+      const int result = move_to_joint(target_state, ip, TEST_SPEED_FACTOR);
       if (result != 0) {
         std::cout << "Failed at " << i << std::endl;
-        std::cout << "Waiting for robot to exit reflex mode..." << std::endl;
-
-        // Wait for robot to exit reflex mode
-        bool moved_home = false;
-        for (int retry = 0; retry < 10; ++retry) {
-          try {
-            franka::Robot recovery_robot("172.16.0.3");
-            franka::RobotState state = recovery_robot.readOnce();
-
-            // Check if robot mode allows movement (not in reflex)
-            if (state.robot_mode == franka::RobotMode::kIdle ||
-                state.robot_mode == franka::RobotMode::kMove) {
-              std::cout << "Robot ready, moving to home..." << std::endl;
-              if (move_to_joint_v1(HOME_POSITION, 0.1) == 0) {
-                moved_home = true;
-                break;
-              }
-            }
-          } catch (const franka::Exception& e) {
-            std::cout << "Retry " << (retry + 1) << ": " << e.what() << std::endl;
-          }
-          std::this_thread::sleep_for(std::chrono::seconds(2));
-        }
-
-        if (!moved_home) {
-          std::cout << "Failed to return home. Please manually recover the robot." << std::endl;
-        }
-
         break;
       }
     }
